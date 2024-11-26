@@ -8,13 +8,13 @@ Currently, not the full IDL is supported see the section on limitations below.
 
 In order to install the project, you will need to build it from source:
 
-1. `git clone ...`
+1. `git clone https://github.com/kvedes/avro-idl.git`
 2. `cargo build --release`
 3. Copy the executable into your PATH
 
 ## Getting started
 
-Once the binary is compiled, it is possible you simply invoke it with an input path for your `avdl` file and an output path for your `avpr` file. The arguments can be seen here:
+Once the binary is compiled, you simply invoke it with an input path for your `avdl` file and an output path for your `avpr` file. The arguments can be seen here:
 
 ```
 Usage: avro-idl <PATH> <OUTPUT_PATH> [FORMAT]
@@ -38,7 +38,7 @@ protocol Event {
 }
 ```
 
-It can be parsed in an `avpr` file using `avro-idl` like so:
+It can be parsed into an `avpr` file using `avro-idl` like so:
 
 ```
 avro-idl simple.avdl simple.avpr
@@ -84,7 +84,7 @@ The table below contains the types that are supported and whether they can be se
 | `record`  | Yes         | No            |
 | `array`   | No          | No            |
 
-\*: String default values not supported for unions.
+\*: Only primitive types are supported as defaults except for string.
 
 ### Imports
 
@@ -118,15 +118,6 @@ The following table contains features in the Avro IDL protocol which are not sup
 ## Deviations
 
 If a namespace is defined, it is set on all records and enums in a protocol.
-
-## Missing feature
-
-- Comments
-- String default values in unions
-- Array default values
-- Logical types
-- RPC messages
-- ordering annotation
 
 ## Known bugs
 

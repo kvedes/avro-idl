@@ -1,0 +1,6 @@
+protocol Event {
+  record Person {
+    string name;
+    int age;
+  }
+}

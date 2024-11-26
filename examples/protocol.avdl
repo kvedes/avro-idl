@@ -1,0 +1,22 @@
+protocol Event {
+    
+    import idl "child/ts.avdl";
+
+    record Person {
+        /** Income */
+        int income;
+        float tax_rate = 0.4;
+        int? children = 1;
+        int? pets = null;
+    }
+
+    enum Meal {
+        Dinner,
+        Lunch
+    } = Dinner;
+
+    record HouseHold {
+        Person mom;
+        Person dad;
+    }
+}

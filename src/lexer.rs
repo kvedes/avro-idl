@@ -527,7 +527,7 @@ impl AvroIdlLexer {
         let array_parser_plain = docstring_parser
             .clone()
             .or_not()
-            .then_ignore(text::keyword("array"))
+            .then_ignore(text::keyword("array").padded())
             .then_ignore(just('<'))
             .then(unnamed_type_parser.clone())
             .then_ignore(just('>'));
@@ -1184,6 +1184,40 @@ mod tests {
                         Box::new(RawField::Float(None, HasDefault::None, None)),
                         HasDefault::None,
                         Some(String::from("hi")),
+                    ),
+                ],
+                None,
+                None,
+            )],
+            None,
+            None,
+        );
+        assert_eq!(res, expected);
+    }
+
+    #[test]
+    fn test_array_after_other_field_no_docstring() {
+        // Known bug: array without docstring fails to parse when preceded by another field
+        let src = "protocol Event {
+
+        record A {
+            string name;
+            array<int> myints;
+        }
+    }";
+        let idl = AvroIdlLexer::new("none".to_string());
+        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let expected = RawField::Protocol(
+            Some("Event".to_string()),
+            vec![RawField::Record(
+                Some("A".to_string()),
+                vec![
+                    RawField::String(Some("name".to_string()), HasDefault::None, None),
+                    RawField::Array(
+                        Some("myints".to_string()),
+                        Box::new(RawField::Int(None, HasDefault::None, None)),
+                        HasDefault::None,
+                        None,
                     ),
                 ],
                 None,

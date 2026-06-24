@@ -119,6 +119,3 @@ The following table contains features in the Avro IDL protocol which are not sup
 
 If a namespace is defined, it is set on all records and enums in a protocol.
 
-## Known bugs
-
-- Array field without docstring has to be first field in record. If multiple array fields or any field is preceding, the array field must have a docstring.

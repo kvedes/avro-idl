@@ -24,7 +24,11 @@ impl AvprSerializer {
         match field {
             Field::Protocol(name, inner_fields, namespace, docstring) => match name {
                 Some(n) => {
-                    let mut json_data = json!({"protocol": n, "types": inner_fields.into_iter().map(|f| self.serialize_field(f).unwrap()).collect::<Vec<Value>>()});
+                    let types = inner_fields
+                        .into_iter()
+                        .map(|f| self.serialize_field(f))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut json_data = json!({"protocol": n, "types": types});
                     if let Some(ns) = namespace {
                         json_data["namespace"] = json!(ns);
                     }
@@ -110,10 +114,12 @@ impl AvprSerializer {
                 Ok(json_data)
             }
             Field::Record(name, inner_fields, namespace, docstring) => {
-                let mut json_data = json!({"type": cf.get_avro_type_name().unwrap(), "name": name, "fields": inner_fields
-                .into_iter()
-                .map(|f| self.serialize_field(f).unwrap())
-                .collect::<Vec<Value>>()});
+                let fields = inner_fields
+                    .into_iter()
+                    .map(|f| self.serialize_field(f))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut json_data =
+                    json!({"type": cf.get_avro_type_name().unwrap(), "name": name, "fields": fields});
                 if let Some(ns) = namespace {
                     json_data["namespace"] = json!(ns);
                 }
@@ -138,16 +144,14 @@ impl AvprSerializer {
                 Ok(json_data)
             }
             Field::Union(name, inner_fields, default, docstring) => {
-                let mut json_data = json!({
-                    "type": "Union",
-                    "name": name,
-                    "type": inner_fields.into_iter()
-                        .filter_map(|f| f.get_avro_type_name())
-                        .collect::<Vec<String>>()
-                });
+                let type_list = inner_fields
+                    .into_iter()
+                    .filter_map(|f| f.get_avro_type_name())
+                    .collect::<Vec<String>>();
+                let mut json_data = json!({"name": name, "type": type_list});
                 match default {
                     HasDefault::Default(Some(v)) => json_data["default"] = json!(v),
-                    HasDefault::Default(None) => json_data["default"] = json!(None::<String>), // TODO: This case cannot happen, since this Field is not nullable
+                    HasDefault::Default(None) => json_data["default"] = json!(null),
                     HasDefault::None => (),
                 };
                 if let Some(ds) = docstring {
@@ -155,8 +159,13 @@ impl AvprSerializer {
                 }
                 Ok(json_data)
             }
-            Field::Array(name, inner_field, _, docstring) => {
+            Field::Array(name, inner_field, default, docstring) => {
                 let mut json_data = json!({"type": "array", "name": name, "items": inner_field.get_avro_type_name().unwrap()});
+                match default {
+                    HasDefault::Default(Some(v)) => json_data["default"] = json!(v),
+                    HasDefault::Default(None) => json_data["default"] = json!(null),
+                    HasDefault::None => (),
+                };
                 if let Some(ds) = docstring {
                     json_data["doc"] = json!(ds);
                 }

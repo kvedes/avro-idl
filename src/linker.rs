@@ -18,8 +18,8 @@ impl LinkParser {
 
         let linked_fields = fields
             .into_iter()
-            .map(|field| self.parse_recurse(&dup_protocol, field).unwrap())
-            .collect();
+            .map(|field| self.parse_recurse(&dup_protocol, field))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Field::Protocol(name, linked_fields, namespace, docstring))
     }
 
@@ -43,8 +43,8 @@ impl LinkParser {
             RawField::Record(name, fields, namespace, docstring) => {
                 let linked_fields = fields
                     .into_iter()
-                    .map(|f| self.parse_recurse(protocol, f).unwrap())
-                    .collect();
+                    .map(|f| self.parse_recurse(protocol, f))
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Field::Record(name, linked_fields, namespace, docstring))
             }
             RawField::Unresolved(_name, value, docstring) => {
@@ -67,8 +67,8 @@ impl LinkParser {
             RawField::Union(name, fields, default, docstring) => {
                 let linked_fields = fields
                     .into_iter()
-                    .map(|f| self.parse_recurse(protocol, f).unwrap())
-                    .collect();
+                    .map(|f| self.parse_recurse(protocol, f))
+                    .collect::<Result<Vec<_>, _>>()?;
                 Ok(Field::Union(name, linked_fields, default, docstring))
             }
             RawField::Protocol(..) => Err(AvroError::InvalidASTDataType(
@@ -76,7 +76,7 @@ impl LinkParser {
             )),
             RawField::Array(name, inner_field, default, docstring) => Ok(Field::Array(
                 name,
-                Box::new(self.parse_recurse(protocol, *inner_field).unwrap()),
+                Box::new(self.parse_recurse(protocol, *inner_field)?),
                 default,
                 docstring,
             )),

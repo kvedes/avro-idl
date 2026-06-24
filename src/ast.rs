@@ -78,7 +78,7 @@ pub enum RawField {
 }
 
 impl RawField {
-    pub fn is_resolved(&self) -> bool {
+    pub fn is_unresolved(&self) -> bool {
         matches!(self, RawField::Unresolved(..))
     }
 

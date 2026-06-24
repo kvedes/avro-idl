@@ -7,6 +7,8 @@ pub enum AvroError {
     FailedParsing(String),
     MissingName(String),
     UndefinedReference(String),
+    Io(String),
+    CircularImport(String),
 }
 
 impl fmt::Display for AvroError {
@@ -16,6 +18,10 @@ impl fmt::Display for AvroError {
             AvroError::FailedParsing(message) => write!(f, "{}", message),
             AvroError::MissingName(message) => write!(f, "{}", message),
             AvroError::UndefinedReference(message) => write!(f, "{}", message),
+            AvroError::Io(message) => write!(f, "IO error: {}", message),
+            AvroError::CircularImport(path) => {
+                write!(f, "Circular import detected: {}", path)
+            }
         }
     }
 }

@@ -18,5 +18,8 @@ fn main() {
         args.output_path,
         args.format.unwrap_or(OutputFormat::AVPR),
     );
-    runner.parse();
+    if let Err(e) = runner.parse() {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 }

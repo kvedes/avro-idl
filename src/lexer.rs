@@ -1,6 +1,7 @@
 use crate::ast::{HasDefault, Literal, RawField};
 use crate::error::AvroError;
 use chumsky::prelude::*;
+use std::collections::HashSet;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
@@ -19,20 +20,27 @@ impl AvroIdlLexer {
 
     /// Parse the content of the path given when instantiating the IDLParser
     pub fn parse(&self) -> Result<RawField, AvroError> {
-        let src = read_to_string(self.path.to_str().unwrap()).expect("Failed to Avro IDL file!");
-        self.parse_idl(src, self.path.clone())
+        let src = read_to_string(&self.path).map_err(|e| AvroError::Io(e.to_string()))?;
+        let mut visited = HashSet::new();
+        visited.insert(self.path.clone());
+        self.parse_idl(src, self.path.clone(), &mut visited)
     }
 
     /// Parse a string containing Avro IDL
-    fn parse_idl(&self, src: String, path: PathBuf) -> Result<RawField, AvroError> {
+    fn parse_idl(
+        &self,
+        src: String,
+        path: PathBuf,
+        visited: &mut HashSet<PathBuf>,
+    ) -> Result<RawField, AvroError> {
         let lexer = self.create_chumsky_parser();
-        let parse_res = lexer.parse(src.clone());
-        if parse_res.is_err() {
-            // TODO: Fix this weird bit
-            lexer.parse(src).unwrap();
-        }
-        let top_level_parse = parse_res.map_err(|err| {
-            AvroError::FailedParsing(err.into_iter().map(|c| c.to_string()).collect())
+        let top_level_parse = lexer.parse(src).map_err(|err| {
+            AvroError::FailedParsing(
+                err.into_iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         })?;
 
         let RawField::Protocol(name, values, namespace, docstring) = top_level_parse else {
@@ -45,14 +53,20 @@ impl AvroIdlLexer {
             // If DataType is Import then load the Protocol and get the values
             match val {
                 RawField::Import(import_path) => {
-                    // Remove file name from path
                     let mut cur_path = path.parent().expect("No parent folder").to_path_buf();
-
                     cur_path.push(import_path);
-                    let import_src = read_to_string(cur_path.to_str().unwrap())
-                        .expect("Failed to load import reference");
 
-                    let import = self.parse_idl(import_src, cur_path)?;
+                    if visited.contains(&cur_path) {
+                        return Err(AvroError::CircularImport(
+                            cur_path.to_string_lossy().into_owned(),
+                        ));
+                    }
+                    visited.insert(cur_path.clone());
+
+                    let import_src = read_to_string(&cur_path)
+                        .map_err(|e| AvroError::Io(e.to_string()))?;
+
+                    let import = self.parse_idl(import_src, cur_path, visited)?;
 
                     let RawField::Protocol(_, im_values, ..) = import else {
                         return Err(AvroError::InvalidASTDataType(
@@ -663,7 +677,7 @@ mod tests {
 
 }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![
@@ -704,7 +718,7 @@ mod tests {
         }
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![
@@ -741,7 +755,7 @@ mod tests {
         }    
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -787,7 +801,7 @@ mod tests {
         }    
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -836,7 +850,7 @@ mod tests {
         }    
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -894,7 +908,7 @@ mod tests {
         }    
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -952,7 +966,7 @@ mod tests {
         }    
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1015,7 +1029,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1079,7 +1093,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![
@@ -1127,7 +1141,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1161,7 +1175,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1206,7 +1220,7 @@ mod tests {
         }
     }";
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1239,7 +1253,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(
@@ -1276,7 +1290,7 @@ mod tests {
     }";
         //
         let idl = AvroIdlLexer::new("none".to_string());
-        let res = idl.parse_idl(src.to_string(), PathBuf::new()).unwrap();
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
         let expected = RawField::Protocol(
             Some("Event".to_string()),
             vec![RawField::Record(

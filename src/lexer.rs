@@ -1,5 +1,6 @@
 use crate::ast::{HasDefault, Literal, RawField};
 use crate::error::AvroError;
+use chumsky::error::SimpleReason;
 use chumsky::prelude::*;
 use std::collections::HashSet;
 use std::fs::read_to_string;
@@ -78,6 +79,15 @@ fn strip_comments(src: &str) -> String {
     out
 }
 
+/// Render a parse error. chumsky's `Display` for `Simple` ignores custom
+/// messages, so those are formatted here instead.
+fn format_parse_error(err: &Simple<char>) -> String {
+    match err.reason() {
+        SimpleReason::Custom(msg) => format!("{msg} (at {:?})", err.span()),
+        _ => err.to_string(),
+    }
+}
+
 /// Parser for a double quoted string literal supporting JSON style escapes
 /// (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`)
 fn string_literal_parser() -> impl Parser<char, String, Error = Simple<char>> + Clone {
@@ -143,7 +153,7 @@ impl AvroIdlLexer {
         let top_level_parse = lexer.parse(strip_comments(&src)).map_err(|err| {
             AvroError::FailedParsing(
                 err.into_iter()
-                    .map(|e| e.to_string())
+                    .map(|e| format_parse_error(&e))
                     .collect::<Vec<_>>()
                     .join("\n"),
             )
@@ -299,10 +309,9 @@ impl AvroIdlLexer {
     fn create_int_default_parser(&self) -> impl Parser<char, RawField, Error = Simple<char>> {
         self.nullable_primitive_parser(
             "int".to_string(),
-            text::digits(10)
+            self.ranged_integer_parser::<i32>("int")
                 .map(|v| HasDefault::Default(Some(v)))
-                .or(text::keyword("null").to(HasDefault::Default(None)))
-                .or_else(|_| Ok(HasDefault::None)),
+                .or(text::keyword("null").to(HasDefault::Default(None))),
             |name, value, docstring| {
                 let default = value.map(|v| v.parse::<i32>().unwrap());
                 RawField::Int(Some(name), default, docstring)
@@ -322,10 +331,9 @@ impl AvroIdlLexer {
     fn create_long_default_parser(&self) -> impl Parser<char, RawField, Error = Simple<char>> {
         self.nullable_primitive_parser(
             "long".to_string(),
-            text::digits(10)
+            self.ranged_integer_parser::<i64>("long")
                 .map(|v| HasDefault::Default(Some(v)))
-                .or(text::keyword("null").to(HasDefault::Default(None)))
-                .or_else(|_| Ok(HasDefault::None)),
+                .or(text::keyword("null").to(HasDefault::Default(None))),
             |name, value, docstring| {
                 let default = value.map(|v| v.parse::<i64>().unwrap());
                 RawField::Long(Some(name), default, docstring)
@@ -343,16 +351,8 @@ impl AvroIdlLexer {
     }
 
     fn create_float_default_parser(&self) -> impl Parser<char, RawField, Error = Simple<char>> {
-        let frac = just('.').chain(text::digits(10));
-
-        let default_parser = just('-')
-            .or_not()
-            .chain::<char, _, _>(text::int(10))
-            .chain::<char, _, _>(frac)
-            .collect::<String>()
-            .from_str()
-            .unwrapped()
-            .labelled("number");
+        // Integer-form values like `2` are valid defaults for floating point fields
+        let default_parser = self.double_parser().or(self.integer_parser());
 
         self.nullable_primitive_parser(
             "float".to_string(),
@@ -380,16 +380,8 @@ impl AvroIdlLexer {
     }
 
     fn create_double_default_parser(&self) -> impl Parser<char, RawField, Error = Simple<char>> {
-        let frac = just('.').chain(text::digits(10));
-
-        let default_parser = just('-')
-            .or_not()
-            .chain::<char, _, _>(text::int(10))
-            .chain::<char, _, _>(frac)
-            .collect::<String>()
-            .from_str()
-            .unwrapped()
-            .labelled("number");
+        // Integer-form values like `2` are valid defaults for floating point fields
+        let default_parser = self.double_parser().or(self.integer_parser());
 
         self.nullable_primitive_parser(
             "double".to_string(),
@@ -481,8 +473,38 @@ impl AvroIdlLexer {
         ))
     }
 
+    /// Parser for an optionally negative integer literal, e.g. `42` or `-1`
+    fn integer_parser(&self) -> impl Parser<char, String, Error = Simple<char>> + Clone {
+        just('-')
+            .or_not()
+            .chain::<char, _, _>(text::int(10))
+            .collect::<String>()
+            .labelled("integer")
+    }
+
+    /// Parser for an integer literal which must fit in `T`, so that later
+    /// `parse::<T>()` calls on the returned string cannot fail. An out of range
+    /// value is reported as a parse error but replaced with `0` so parsing can
+    /// continue; otherwise the error would be lost among the other alternatives.
+    fn ranged_integer_parser<T: std::str::FromStr>(
+        &self,
+        type_name: &'static str,
+    ) -> impl Parser<char, String, Error = Simple<char>> + Clone {
+        self.integer_parser()
+            .validate(move |value, span, emit| match value.parse::<T>() {
+                Ok(_) => value,
+                Err(_) => {
+                    emit(Simple::custom(
+                        span,
+                        format!("default value {value} is out of range for {type_name}"),
+                    ));
+                    "0".to_string()
+                }
+            })
+    }
+
     /// Create float/double parser
-    fn double_parser(&self) -> impl Parser<char, String, Error = Simple<char>> {
+    fn double_parser(&self) -> impl Parser<char, String, Error = Simple<char>> + Clone {
         let frac = just('.').chain(text::digits(10));
 
         just('-')
@@ -672,7 +694,19 @@ impl AvroIdlLexer {
             .or(self
                 .double_parser()
                 .map(|value| Literal::Double(value.parse::<f64>().unwrap())))
-            .or(text::digits(10).map(|value: String| Literal::Int(value.parse::<i32>().unwrap())))
+            .or(self.integer_parser().validate(|value, span, emit| {
+                if let Ok(v) = value.parse::<i32>() {
+                    Literal::Int(v)
+                } else if let Ok(v) = value.parse::<i64>() {
+                    Literal::Long(v)
+                } else {
+                    emit(Simple::custom(
+                        span,
+                        format!("default value {value} is out of range for long"),
+                    ));
+                    Literal::Long(0)
+                }
+            }))
             .or(just('"')
                 .ignore_then(text::ident())
                 .then_ignore(just('"'))
@@ -764,6 +798,7 @@ mod tests {
     use crate::ast::{HasDefault, Literal, RawField};
 
     use super::AvroIdlLexer;
+    use crate::error::AvroError;
 
     #[test]
     fn test_single_protocol() {
@@ -1581,5 +1616,137 @@ protocol Event { // trailing comment
             None,
         );
         assert_eq!(res, expected);
+    }
+
+    /// Parse a record body and return its fields
+    fn parse_record_fields(body: &str) -> Result<Vec<RawField>, AvroError> {
+        let src = format!("protocol Event {{ record R {{ {body} }} }}");
+        let idl = AvroIdlLexer::new("none".to_string());
+        let res = idl.parse_idl(src, PathBuf::new(), &mut std::collections::HashSet::new())?;
+        let RawField::Protocol(_, mut values, ..) = res else {
+            panic!("expected protocol");
+        };
+        let RawField::Record(_, fields, ..) = values.remove(0) else {
+            panic!("expected record");
+        };
+        Ok(fields)
+    }
+
+    fn assert_parse_error(body: &str, expected: &str) {
+        match parse_record_fields(body) {
+            Err(AvroError::FailedParsing(msg)) => {
+                assert!(msg.contains(expected), "unexpected error message: {msg}")
+            }
+            other => panic!("expected parse error for {body:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_negative_integer_defaults() {
+        let fields = parse_record_fields(
+            "int a = -1; int? b = -2147483648; long c = -5; long? d = -9223372036854775808;",
+        )
+        .unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                RawField::Int(Some("a".to_string()), HasDefault::Default(Some(-1)), None),
+                RawField::Union(
+                    Some("b".to_string()),
+                    vec![RawField::Int(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Int(i32::MIN))),
+                    None,
+                ),
+                RawField::Long(Some("c".to_string()), HasDefault::Default(Some(-5)), None),
+                RawField::Union(
+                    Some("d".to_string()),
+                    vec![RawField::Long(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Long(i64::MIN))),
+                    None,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_integer_default_bounds() {
+        let fields =
+            parse_record_fields("int a = 2147483647; long b = 9223372036854775807;").unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                RawField::Int(Some("a".to_string()), HasDefault::Default(Some(i32::MAX)), None),
+                RawField::Long(Some("b".to_string()), HasDefault::Default(Some(i64::MAX)), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_integer_default_out_of_range() {
+        assert_parse_error("int a = 99999999999;", "99999999999 is out of range for int");
+        assert_parse_error("int? a = 2147483648;", "2147483648 is out of range for int");
+        assert_parse_error("int a = -2147483649;", "-2147483649 is out of range for int");
+        assert_parse_error(
+            "long a = 9223372036854775808;",
+            "9223372036854775808 is out of range for long",
+        );
+        assert_parse_error(
+            "long? a = 99999999999999999999;",
+            "99999999999999999999 is out of range for long",
+        );
+        assert_parse_error(
+            "union { long, null } a = 99999999999999999999;",
+            "99999999999999999999 is out of range for long",
+        );
+    }
+
+    #[test]
+    fn test_integer_form_floating_point_defaults() {
+        let fields =
+            parse_record_fields("double a = 2; double? b = -3; float c = 4; float? d = -1;")
+                .unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                RawField::Double(Some("a".to_string()), HasDefault::Default(Some(2.0)), None),
+                RawField::Union(
+                    Some("b".to_string()),
+                    vec![RawField::Double(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Double(-3.0))),
+                    None,
+                ),
+                RawField::Float(Some("c".to_string()), HasDefault::Default(Some(4.0)), None),
+                RawField::Union(
+                    Some("d".to_string()),
+                    vec![RawField::Float(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Float(-1.0))),
+                    None,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_union_integer_defaults() {
+        let fields =
+            parse_record_fields("union { int, null } a = -1; union { long, null } b = 99999999999;")
+                .unwrap();
+        assert_eq!(
+            fields,
+            vec![
+                RawField::Union(
+                    Some("a".to_string()),
+                    vec![RawField::Int(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Int(-1))),
+                    None,
+                ),
+                RawField::Union(
+                    Some("b".to_string()),
+                    vec![RawField::Long(None, HasDefault::None, None), RawField::Null],
+                    HasDefault::Default(Some(Literal::Long(99999999999))),
+                    None,
+                ),
+            ]
+        );
     }
 }

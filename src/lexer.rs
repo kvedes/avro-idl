@@ -5,6 +5,112 @@ use std::collections::HashSet;
 use std::fs::read_to_string;
 use std::path::PathBuf;
 
+/// Replace `//` line comments and `/* */` block comments with whitespace.
+/// Docstrings (`/** ... */`) are kept since the parser attaches them to fields.
+/// Newlines are preserved so error positions still line up with the source.
+fn strip_comments(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        match (c, next) {
+            // String literal: copy verbatim, honouring backslash escapes
+            ('"', _) => {
+                out.push(c);
+                i += 1;
+                while i < chars.len() {
+                    let sc = chars[i];
+                    out.push(sc);
+                    i += 1;
+                    if sc == '\\' {
+                        if let Some(&escaped) = chars.get(i) {
+                            out.push(escaped);
+                            i += 1;
+                        }
+                    } else if sc == '"' {
+                        break;
+                    }
+                }
+            }
+            ('/', Some('/')) => {
+                while i < chars.len() && chars[i] != '\n' {
+                    out.push(' ');
+                    i += 1;
+                }
+            }
+            // `/**/` is an empty comment, `/**x` starts a docstring
+            ('/', Some('*'))
+                if chars.get(i + 2) == Some(&'*') && chars.get(i + 3) != Some(&'/') =>
+            {
+                out.push_str("/**");
+                i += 3;
+                while i < chars.len() {
+                    if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        out.push_str("*/");
+                        i += 2;
+                        break;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
+                }
+            }
+            ('/', Some('*')) => {
+                out.push_str("  ");
+                i += 2;
+                while i < chars.len() {
+                    if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                        out.push_str("  ");
+                        i += 2;
+                        break;
+                    }
+                    out.push(if chars[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Parser for a double quoted string literal supporting JSON style escapes
+/// (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`)
+fn string_literal_parser() -> impl Parser<char, String, Error = Simple<char>> + Clone {
+    let unicode_escape = just('u').ignore_then(
+        filter(|c: &char| c.is_ascii_hexdigit())
+            .repeated()
+            .exactly(4)
+            .collect::<String>()
+            .validate(|digits, span, emit| {
+                char::from_u32(u32::from_str_radix(&digits, 16).unwrap()).unwrap_or_else(|| {
+                    emit(Simple::custom(span, "invalid unicode escape"));
+                    '\u{FFFD}'
+                })
+            }),
+    );
+
+    let escape = just('\\').ignore_then(choice((
+        just('"'),
+        just('\\'),
+        just('/'),
+        just('b').to('\x08'),
+        just('f').to('\x0C'),
+        just('n').to('\n'),
+        just('r').to('\r'),
+        just('t').to('\t'),
+        unicode_escape,
+    )));
+
+    just('"')
+        .ignore_then(none_of("\\\"").or(escape).repeated().collect::<String>())
+        .then_ignore(just('"'))
+}
+
 /// Parser for the Avro IDL language
 pub struct AvroIdlLexer {
     path: PathBuf,
@@ -34,7 +140,7 @@ impl AvroIdlLexer {
         visited: &mut HashSet<PathBuf>,
     ) -> Result<RawField, AvroError> {
         let lexer = self.create_chumsky_parser();
-        let top_level_parse = lexer.parse(src).map_err(|err| {
+        let top_level_parse = lexer.parse(strip_comments(&src)).map_err(|err| {
             AvroError::FailedParsing(
                 err.into_iter()
                     .map(|e| e.to_string())
@@ -339,9 +445,7 @@ impl AvroIdlLexer {
     }
 
     fn create_string_default_parser(&self) -> impl Parser<char, RawField, Error = Simple<char>> {
-        let default_parser = just('"')
-            .ignore_then(none_of('"').repeated().collect::<String>())
-            .then_ignore(just('"'));
+        let default_parser = string_literal_parser();
 
         self.nullable_primitive_parser(
             "string".to_string(),
@@ -1076,6 +1180,137 @@ mod tests {
             None,
         );
         assert_eq!(res, expected);
+    }
+
+    #[test]
+    fn test_string_escapes() {
+        let src = r#"protocol Event {
+        record Quotes {
+            string a = "say \"hi\"";
+            string? b = "back\\slash\ttab\nnewline é";
+            string c = "not // a comment /* either */";
+        }
+    }"#;
+        let idl = AvroIdlLexer::new("none".to_string());
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
+        let expected = RawField::Protocol(
+            Some("Event".to_string()),
+            vec![RawField::Record(
+                Some("Quotes".to_string()),
+                vec![
+                    RawField::String(
+                        Some("a".to_string()),
+                        HasDefault::Default(Some("say \"hi\"".to_string())),
+                        None,
+                    ),
+                    RawField::Union(
+                        Some("b".to_string()),
+                        vec![
+                            RawField::String(None, HasDefault::None, None),
+                            RawField::Null,
+                        ],
+                        HasDefault::Default(Some(Literal::String(
+                            "back\\slash\ttab\nnewline \u{e9}".to_string(),
+                        ))),
+                        None,
+                    ),
+                    RawField::String(
+                        Some("c".to_string()),
+                        HasDefault::Default(Some("not // a comment /* either */".to_string())),
+                        None,
+                    ),
+                ],
+                None,
+                None,
+            )],
+            None,
+            None,
+        );
+        assert_eq!(res, expected);
+    }
+
+    #[test]
+    fn test_invalid_string_escape() {
+        let src = r#"protocol Event {
+        record Quotes {
+            string a = "bad \q escape";
+        }
+    }"#;
+        let idl = AvroIdlLexer::new("none".to_string());
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new());
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_comments() {
+        let src = "// Leading line comment
+/* Leading block comment */
+protocol Event { // trailing comment
+    /*
+     * Multi-line block comment
+     */
+    record Person {
+        /** The name */
+        string name; // line comment after a field
+        /* block comment */ int age;
+        // comment between docstring and field is ignored
+        /**/ long id;
+        array<string> tags; /* trailing */
+    }
+
+    // comment before enum
+    enum Meal {
+        Dinner, // comment in enum
+        /* another */ Lunch
+    }
+    // comment before closing brace
+}
+// comment at end of file";
+        let idl = AvroIdlLexer::new("none".to_string());
+        let res = idl.parse_idl(src.to_string(), PathBuf::new(), &mut std::collections::HashSet::new()).unwrap();
+        let expected = RawField::Protocol(
+            Some("Event".to_string()),
+            vec![
+                RawField::Record(
+                    Some("Person".to_string()),
+                    vec![
+                        RawField::String(
+                            Some("name".to_string()),
+                            HasDefault::None,
+                            Some("The name".to_string()),
+                        ),
+                        RawField::Int(Some("age".to_string()), HasDefault::None, None),
+                        RawField::Long(Some("id".to_string()), HasDefault::None, None),
+                        RawField::Array(
+                            Some("tags".to_string()),
+                            Box::new(RawField::String(None, HasDefault::None, None)),
+                            HasDefault::None,
+                            None,
+                        ),
+                    ],
+                    None,
+                    None,
+                ),
+                RawField::Enum(
+                    Some("Meal".to_string()),
+                    vec!["Dinner".to_string(), "Lunch".to_string()],
+                    HasDefault::None,
+                    None,
+                    None,
+                ),
+            ],
+            None,
+            None,
+        );
+        assert_eq!(res, expected);
+    }
+
+    #[test]
+    fn test_strip_comments_preserves_lines() {
+        let src = "a // x\n/* b\nc */ d\n/** doc */ e \"// s\"";
+        let stripped = super::strip_comments(src);
+        assert_eq!(stripped.lines().count(), src.lines().count());
+        assert_eq!(stripped, "a     \n    \n     d\n/** doc */ e \"// s\"");
     }
 
     #[test]

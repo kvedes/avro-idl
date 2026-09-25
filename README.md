@@ -86,6 +86,8 @@ The table below contains the types that are supported and whether they can be se
 
 \*: Only primitive types are supported as defaults except for string.
 
+String defaults support JSON style escapes: `\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and `\uXXXX`.
+
 ### Imports
 
 The Avro IDL protocol specifies multiple types of imports: `avsc`, `avpr` and `avdl`. This project only supports `avdl`.
@@ -96,7 +98,11 @@ Namespace annotations on the `protocol` are supported.
 
 ### Docstrings
 
-Docstrings can be set for all supported types. They must start with `/**` and end with `*/`. Note that regular comments are not support: `//`.
+Docstrings can be set for all supported types. They must start with `/**` and end with `*/`.
+
+### Comments
+
+Line comments (`// ...`) and block comments (`/* ... */`) are supported anywhere whitespace is allowed and are ignored by the parser.
 
 ## Unsupported
 
@@ -110,7 +116,6 @@ The following table contains features in the Avro IDL protocol which are not sup
 | Fixed length field          |
 | All logical types           |
 | Maps                        |
-| Comments (`//`)             |
 | Ordering annotations        |
 | Alias annotations           |
 | Java class annotations      |

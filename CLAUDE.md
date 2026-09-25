@@ -37,8 +37,7 @@ This is a Rust CLI that converts Avro IDL (`.avdl`) files to Avro Protocol (`.av
 
 ## Known limitations
 
-- Array fields must be the first field in a record, or must have a docstring, otherwise parsing fails (known bug).
 - Only `import idl` is supported; `import avsc` and `import avpr` are not.
-- `//` line comments are not parsed; only `/** ... */` docstrings are supported.
+- Comments (`//` and `/* */`) are stripped by `strip_comments` in `lexer.rs` before parsing; `/** ... */` docstrings are kept and attached to fields.
 - Nullable shorthand (`int?`) creates a `union{T, null}` internally.
 - Tests live in `#[cfg(test)]` blocks at the bottom of `lexer.rs` and `linker.rs`.
